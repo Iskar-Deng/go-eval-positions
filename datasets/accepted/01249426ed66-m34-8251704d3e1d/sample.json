@@ -1,0 +1,45 @@
+{
+  "source_sgf": "outputs/games/2005-03-07__12th_Agon-Kiriyama_Cup__Preliminary_B__æ_ä_æ_æ__Sakaguchi_Ryuzo__453ab2c8f4/annotated.sgf",
+  "move_number": 34,
+  "moves": {
+    "A": "T7",
+    "B": "R10",
+    "C": "H13"
+  },
+  "results": {
+    "X": {
+      "winrate": {
+        "A": 0.398197225,
+        "B": 0.405079929,
+        "C": 0.0224629264
+      },
+      "score_lead": {
+        "A": -0.799332883,
+        "B": -0.776698628,
+        "C": -10.6542358
+      }
+    },
+    "Y": {
+      "winrate": {
+        "A": 0.0101980133,
+        "B": 0.523198541,
+        "C": 0.156372138
+      },
+      "score_lead": {
+        "A": -15.6361276,
+        "B": 0.43438917,
+        "C": -4.05974614
+      }
+    }
+  },
+  "X_A_targets": [
+    {
+      "size": 3,
+      "stones": [
+        "R6",
+        "R7",
+        "S7"
+      ]
+    }
+  ]
+}

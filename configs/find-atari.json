@@ -1,0 +1,18 @@
+{
+  "rules": "chinese",
+  "komi": 7.5,
+  "visits": 500,
+  "max_loss": 2.0,
+  "b_count": 3,
+  "b_pool": 8,
+  "strict_not_top": false,
+  "min_ab_distance": 6,
+  "min_target_stones": 2,
+  "winrate_min": 0.25,
+  "stop_winrate_min": 0.05,
+  "start": 30,
+  "end": null,
+  "max_samples": null,
+  "query_timeout_seconds": 300,
+  "shutdown_timeout_seconds": 5
+}
