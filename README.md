@@ -63,21 +63,6 @@ Y 的历史是否自然、是否构成有效 minimal pair 仍由人工确认。
 有非法当前选点、填写表在检测后修改过、检测产物被修改时拒绝收录，要求重新 check。
 测试集不自动去重合并不同人工选择；重复收录完全相同的表单会因目录已存在而报错。
 
-## 批量：2000 年及以后
-
-```sh
-.venv/bin/python scripts/batch_atari.py games --min-year 2000 --max-games 10
-```
-
-按 SGF `DT` 元信息过滤，不按文件名。批量参数直接用命令行：
-`--min-year 2000` 包含 2000 年（默认值）；不加 `--max-games` 则不限盘数。
-日期缺失或无法识别则跳过；跨年多日期以最早年份判断。
-按路径顺序串行运行，一盘报错继续下一盘；每盘复用 `configs/find-atari.json` 的筛选配置。
-只列清单、不运行引擎：`.venv/bin/python scripts/batch_atari.py games --dry-run`。
-批量结果固定保存在 `outputs/games/棋谱ID/`。每盘成功后写入 `.complete` 标记和配置快照；
-重复运行同一命令时，配置相同的已完成棋谱直接跳过，从未完成处继续。
-中断时正在处理的棋谱没有完成标记，下次会覆盖重跑该盘。
-
 ## 运行
 
 ```sh
