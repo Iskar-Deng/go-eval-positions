@@ -7,7 +7,7 @@ Automatically extract paired Go positions X/Y, then append common moves to balan
 Use Ubuntu 22.04 or later on Linux x86_64, Python 3.10+, and an NVIDIA GPU with a driver supporting CUDA 12.1. Run these commands from the repository root. The NVIDIA driver must already be installed.
 
 ```bash
-git clone --branch codex/simple-server --single-branch https://github.com/Iskar-Deng/go-eval-positions.git
+git clone --branch server --single-branch https://github.com/Iskar-Deng/go-eval-positions.git
 cd go-eval-positions
 nvidia-smi
 sudo apt-get update
