@@ -7,7 +7,7 @@ Extract and balance X/Y Go positions while preserving full move histories.
 Requires Ubuntu/Debian Linux x86_64, Python 3.10+, and an NVIDIA GPU with a driver supporting CUDA 12.1.
 
 ```bash
-git clone -b server --single-branch https://github.com/Iskar-Deng/go-eval-positions.git
+git clone -b main --single-branch https://github.com/Iskar-Deng/go-eval-positions.git
 cd go-eval-positions
 bash setup.sh
 ```
