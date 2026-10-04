@@ -597,7 +597,7 @@ def filler_pool(xr,yr,x,y,actor,r,blocked):
     return sorted(choices,reverse=True,key=lambda v:(v[0],v[1]))
 
 
-def export_one(r, destination, sources):
+def export_one(r, destination):
     if 'history' not in r or not all(quality(r['X'],r['Y'])[1].values()):
         raise ValueError('Only fully verified full-history samples may be exported')
     history=r['history'];initial=initial_board(history)
@@ -613,24 +613,15 @@ def export_one(r, destination, sources):
         boards[side]=board
     if not check_structure(boards['X'],boards['Y'],r['player'],r['A'],r['B'])['valid']:
         raise ValueError('Pair structure no longer valid')
-    source=Path(r['source']);raw=source.read_bytes()
-    if hashlib.sha256(raw).hexdigest()!=r['source_sha256']:raise ValueError('Source changed')
-    sources.mkdir(parents=True,exist_ok=True)
-    source_name=r['source_sha256']+'.sgf';(sources/source_name).write_bytes(raw)
     destination.mkdir(parents=True,exist_ok=False)
     for side in ['X','Y']:
         write_sgf(destination/f'{side}.sgf',history,side)
-    accepted=dict(source_sgf='datasets/sources/'+source_name,move_number=r['turn'],
+    sample=dict(source_sha256=r['source_sha256'],move_number=r['turn'],
         moves={m:r[m] for m in ['A','B']},
         results={s:dict(winrate={m:r[s][m]['winrate'] for m in ['A','B']},
                         score_lead={m:r[s][m]['scoreLead'] for m in ['A','B']}) for s in ['X','Y']},
         X_A_targets=[dict(size=t['stone_count'],stones=t['stones']) for t in ataris(boards['X'],r['player'].lower())[r['A']]])
-    (destination/'sample.json').write_text(json.dumps(accepted,indent=2)+'\n')
-    return dict(id=r['id'],player=r['player'],source_sha256=r['source_sha256'],
-        move_number=r['turn'],changed_historical_move=history['changed_move_number'],
-        source_turn=history['source_turn'],appended_moves=r.get('appended_moves',[]),visits=r['visits'],
-        protocol='full_history_single_historical_move_edit',
-        checksums={f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in destination.iterdir()})
+    (destination/'sample.json').write_text(json.dumps(sample,indent=2)+'\n')
 
 
 MODEL_NAME='kata1-b18c384nbt-s9996604416-d4316597426.bin.gz'
@@ -858,26 +849,19 @@ def atomic_json(path, value):
     temp.replace(path)
 
 
-def save_accepted(record, out):
-    """Publish a complete sample atomically, then update its manifest."""
-    dataset = out/'datasets'
-    accepted = dataset/'accepted'
-    accepted.mkdir(parents=True, exist_ok=True)
-    temp = accepted/(record['id']+'.tmp')
+def save_sample(record, out):
+    """Publish the JSON and both full-history SGFs together."""
+    samples = out/'datasets/sample'
+    samples.mkdir(parents=True, exist_ok=True)
+    temp = samples/(record['id']+'.tmp')
     if temp.exists():
         shutil.rmtree(temp)
-    item = export_one(record, temp, dataset/'sources')
-    dest = accepted/record['id']
+    export_one(record, temp)
+    dest = samples/record['id']
     if dest.exists():
         shutil.rmtree(temp)
     else:
         temp.replace(dest)
-    manifest_path = dataset/'manifest.json'
-    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else dict(samples=[])
-    items = {s['id']: s for s in manifest['samples']}
-    items[item['id']] = item
-    atomic_json(manifest_path, dict(count=len(items), rules='chinese', komi=7.5,
-                                   candidates=['A', 'B'], samples=list(items.values())))
 
 
 def process_pair(e, record, out):
@@ -889,10 +873,10 @@ def process_pair(e, record, out):
         result = balance_pair(e, record)
         status = 'balanced' if result is not None else 'balance_failed'
     if result is not None:
-        # Keep the final record until both the sample and manifest are published.
+        # Keep the final record until the sample is published and state is saved.
         # A restart can finish this transaction without rerunning the engine.
         atomic_json(out/'pending.json', dict(result, _result_status=status))
-        save_accepted(result, out)
+        save_sample(result, out)
     print(f"{record['id']}: {status}", flush=True)
     return status
 
@@ -912,10 +896,6 @@ def run_locked(args, out):
     state_path = out/'state.json'
     state = json.loads(state_path.read_text()) if state_path.exists() else dict(completed={})
     state.setdefault('rows', {})
-    excluded = set()
-    for manifest in [PROJECT/'datasets/manifest.json', out/'datasets/manifest.json']:
-        if manifest.exists():
-            excluded.update(s['source_sha256'] for s in json.loads(manifest.read_text())['samples'])
     paths = sorted(args.games_dir.resolve().rglob('*.sgf'))
     if not paths:
         raise SystemExit(f'No SGF games found in {args.games_dir}')
@@ -929,12 +909,9 @@ def run_locked(args, out):
             record = json.loads(pending.read_text())
             sha = record['source_sha256']
             if sha not in state['completed']:
-                if sha in excluded:
-                    status = record.get('_result_status', 'accepted')
-                else:
-                    if not all(quality(record['X'], record['Y'])[1].values()):
-                        e = Evaluator(out)
-                    status = process_pair(e, record, out)
+                if not all(quality(record['X'], record['Y'])[1].values()):
+                    e = Evaluator(out)
+                status = process_pair(e, record, out)
                 state['completed'][sha] = status
                 state['rows'].pop(sha, None)
                 atomic_json(state_path, state)
@@ -943,7 +920,7 @@ def run_locked(args, out):
         seen = set()
         for path in paths:
             sha = hashlib.sha256(path.read_bytes()).hexdigest()
-            if sha in seen or sha in state['completed'] or sha in excluded:
+            if sha in seen or sha in state['completed']:
                 continue
             seen.add(sha)
             queue.append((path, sha, None))

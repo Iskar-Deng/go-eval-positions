@@ -31,9 +31,8 @@ Each extracted pair is immediately balanced if needed and saved if it passes. Ru
 
 ## Files
 
-- `datasets/accepted/`: 20 sample pairs. Each contains `X.sgf`, `Y.sgf`, and `sample.json` with candidate moves, winrates, and score leads.
-- `datasets/sources/` and `datasets/manifest.json`: original games and sample metadata.
+- `datasets/sample/`: 20 example pairs. Each contains full-history `X.sgf` and `Y.sgf`, plus `sample.json` with candidate moves, winrates, and score leads. These examples do not affect generation.
 - `datasets/games/`: 1,000 input games for extraction.
 - `scripts/generate.py`: the complete extraction and balancing script.
 - `configs/katago-analysis.cfg`: KataGo settings.
-- `outputs/datasets/accepted/`: generated samples. `outputs/state.json` tracks progress for resuming.
+- `outputs/datasets/sample/`: generated samples. `outputs/state.json` tracks progress for resuming.
