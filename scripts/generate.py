@@ -871,13 +871,12 @@ def progress_line(state, sources, elapsed, session_elapsed, initial_done):
 
 def save_sample(record, out):
     """Publish the JSON and both full-history SGFs together."""
-    samples = out/'datasets/sample'
-    samples.mkdir(parents=True, exist_ok=True)
-    temp = samples/(record['id']+'.tmp')
+    out.mkdir(parents=True, exist_ok=True)
+    temp = out/(record['id']+'.tmp')
     if temp.exists():
         shutil.rmtree(temp)
     export_one(record, temp)
-    dest = samples/record['id']
+    dest = out/record['id']
     if dest.exists():
         shutil.rmtree(temp)
     else:

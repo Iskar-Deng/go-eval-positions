@@ -28,4 +28,4 @@ Progress shows completed/remaining games, saved samples, elapsed time, and a rou
 - `datasets/games/`: 1,000 input games for extraction.
 - `scripts/generate.py`: the complete extraction and balancing script.
 - `configs/katago-analysis.cfg`: KataGo settings.
-- `outputs/datasets/sample/`: generated samples. `outputs/state.json` tracks progress for resuming.
+- `outputs/<id>/`: generated samples (`X.sgf`, `Y.sgf`, and `sample.json`). `outputs/state.json` tracks progress for resuming.
