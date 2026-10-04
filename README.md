@@ -22,6 +22,8 @@ Each extracted pair is immediately balanced if needed and saved if it passes. Ru
 
 Progress shows completed/remaining games, saved samples, elapsed time, and a rough ETA after warm-up.
 
+All positions use Chinese rules, 7.5 komi, and a 19×19 board, regardless of the source SGF settings. These values are passed to KataGo by `query_position()` in `scripts/generate.py` and also written to exported SGFs. GPU, thread, and cache settings are in `configs/katago-analysis.cfg`.
+
 ## Files
 
 - `datasets/sample/`: 20 example pairs. Each contains full-history `X.sgf` and `Y.sgf`, plus `sample.json` with candidate moves, winrates, and score leads. These examples do not affect generation.
