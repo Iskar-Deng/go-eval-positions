@@ -849,6 +849,26 @@ def atomic_json(path, value):
     temp.replace(path)
 
 
+def duration(seconds):
+    minutes = max(0, int(seconds / 60))
+    return f'{minutes // 60}h {minutes % 60:02d}m' if minutes >= 60 else f'{minutes}m'
+
+
+def progress_line(state, sources, elapsed, session_elapsed, initial_done):
+    statuses = [state['completed'][sha] for sha in sources if sha in state['completed']]
+    done, total = len(statuses), len(sources)
+    remaining = total - done
+    saved = sum(status in ('direct', 'balanced', 'accepted') for status in statuses)
+    recent_done = done - initial_done
+    eta = 'warming up'
+    if remaining == 0:
+        eta = '0m'
+    elif recent_done >= 5 and session_elapsed >= 60:
+        eta = '~' + duration(session_elapsed / recent_done * remaining)
+    return (f'Games {done}/{total} | Remaining {remaining} | Samples {saved} | '
+            f'Elapsed {duration(elapsed)} | ETA (rough) {eta}')
+
+
 def save_sample(record, out):
     """Publish the JSON and both full-history SGFs together."""
     samples = out/'datasets/sample'
@@ -900,6 +920,24 @@ def run_locked(args, out):
     if not paths:
         raise SystemExit(f'No SGF games found in {args.games_dir}')
     random.Random(104).shuffle(paths)
+    games = {}
+    for path in paths:
+        games.setdefault(hashlib.sha256(path.read_bytes()).hexdigest(), path)
+    initial_done = sum(sha in state['completed'] for sha in games)
+    previous_elapsed = state.get('elapsed_seconds', 0)
+    started = time.monotonic()
+    last_report = started
+
+    def checkpoint(force=False):
+        nonlocal last_report
+        now = time.monotonic()
+        state['elapsed_seconds'] = previous_elapsed + now - started
+        atomic_json(state_path, state)
+        if force or now - last_report >= 30:
+            print(progress_line(state, games, state['elapsed_seconds'], now-started, initial_done), flush=True)
+            last_report = now
+
+    checkpoint(force=True)
     atomic_json(out/'engine.json', provenance())
     e = None
     pending = out/'pending.json'
@@ -914,15 +952,12 @@ def run_locked(args, out):
                 status = process_pair(e, record, out)
                 state['completed'][sha] = status
                 state['rows'].pop(sha, None)
-                atomic_json(state_path, state)
+                checkpoint()
             pending.unlink()
         queue = deque()
-        seen = set()
-        for path in paths:
-            sha = hashlib.sha256(path.read_bytes()).hexdigest()
-            if sha in seen or sha in state['completed']:
+        for sha, path in games.items():
+            if sha in state['completed']:
                 continue
-            seen.add(sha)
             queue.append((path, sha, None))
         # Round-robin games, as in the original search: a difficult game should
         # not delay trying promising positions from every other game.
@@ -935,7 +970,7 @@ def run_locked(args, out):
                     print(f'Skipping invalid SGF: {path.name}: {exc}', flush=True)
                     state['completed'][sha] = 'invalid_sgf'
                     state['rows'].pop(sha, None)
-                    atomic_json(state_path, state)
+                    checkpoint()
                     continue
             row_index = state['rows'].get(sha, 0)
             status = 'no_pair'
@@ -946,20 +981,20 @@ def run_locked(args, out):
                 record = extract_pair(e, rows[row_index])
                 if record is None:
                     state['rows'][sha] = row_index+1
-                    atomic_json(state_path, state)
+                    checkpoint()
                     queue.append((path, sha, rows))
                     continue
                 atomic_json(pending, record)
                 status = process_pair(e, record, out)
             state['completed'][sha] = status
             state['rows'].pop(sha, None)
-            atomic_json(state_path, state)
+            checkpoint()
             pending.unlink(missing_ok=True)
-            print(f'Completed games: {len(state["completed"])} | {dict(Counter(state["completed"].values()))}', flush=True)
         print('All input games processed. Add more SGFs and run the same command to continue.', flush=True)
     finally:
         if e is not None:
             e.close()
+        checkpoint(force=True)
 
 
 def main():

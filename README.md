@@ -29,6 +29,8 @@ Each extracted pair is immediately balanced if needed and saved if it passes. Ru
 .venv/bin/python scripts/generate.py
 ```
 
+Progress shows completed/remaining games, saved samples, elapsed time, and a rough ETA after warm-up.
+
 ## Files
 
 - `datasets/sample/`: 20 example pairs. Each contains full-history `X.sgf` and `Y.sgf`, plus `sample.json` with candidate moves, winrates, and score leads. These examples do not affect generation.
