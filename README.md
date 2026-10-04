@@ -23,10 +23,10 @@ curl -fL https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b
 
 ## Run
 
-Extract for 60 minutes, then balance for up to 30 minutes. Use a new output folder for each run.
+Each extracted pair is immediately balanced if needed and saved if it passes. Runs until the input games are exhausted or you press Ctrl+C. Run the same command again to resume. Difficult pairs get about two minutes of balancing before the search moves on.
 
 ```bash
-.venv/bin/python scripts/generate.py --out outputs/run01 --extract-minutes 60 --balance-minutes 30
+.venv/bin/python scripts/generate.py
 ```
 
 ## Files
@@ -34,5 +34,6 @@ Extract for 60 minutes, then balance for up to 30 minutes. Use a new output fold
 - `datasets/accepted/`: 20 sample pairs. Each contains `X.sgf`, `Y.sgf`, and `sample.json` with candidate moves, winrates, and score leads.
 - `datasets/sources/` and `datasets/manifest.json`: original games and sample metadata.
 - `datasets/games/`: 1,000 input games for extraction.
-- `scripts/` and `configs/`: generation code and KataGo settings.
-- `outputs/run01/datasets/accepted/`: generated samples; counts are in `outputs/run01/summary.json`.
+- `scripts/generate.py`: the complete extraction and balancing script.
+- `configs/katago-analysis.cfg`: KataGo settings.
+- `outputs/datasets/accepted/`: generated samples. `outputs/state.json` tracks progress for resuming.
