@@ -25,7 +25,7 @@ Progress shows completed/remaining games, saved samples, elapsed time, and a rou
 ## Files
 
 - `datasets/sample/`: 20 example pairs. Each contains full-history `X.sgf` and `Y.sgf`, plus `sample.json` with candidate moves, winrates, and score leads. These examples do not affect generation.
-- `datasets/games/`: 1,000 input games for extraction.
+- `datasets/games/`: 96,121 input SGF files for extraction; duplicate games are skipped.
 - `scripts/generate.py`: the complete extraction and balancing script.
 - `configs/katago-analysis.cfg`: KataGo settings.
 - `outputs/<id>/`: generated samples (`X.sgf`, `Y.sgf`, and `sample.json`). `outputs/state.json` tracks progress for resuming.
