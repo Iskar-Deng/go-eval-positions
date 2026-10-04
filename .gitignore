@@ -1,8 +1,6 @@
-.local/
-.DS_Store
-__pycache__/
 .venv/
+.local/
 outputs/
-manual_reviews/
-games/
-tests/
+__pycache__/
+.DS_Store
+*.log

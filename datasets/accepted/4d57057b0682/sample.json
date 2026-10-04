@@ -1,0 +1,40 @@
+{
+  "source_sgf": "datasets/sources/e9ec007ffa9f6ab585415094f672fcd74771e854a6ba47cba4b211b6a050658d.sgf",
+  "move_number": 96,
+  "moves": {
+    "A": "J4",
+    "B": "O4"
+  },
+  "results": {
+    "X": {
+      "winrate": {
+        "A": 0.436849957,
+        "B": 0.445342103
+      },
+      "score_lead": {
+        "A": -0.143121863,
+        "B": -0.0619010637
+      }
+    },
+    "Y": {
+      "winrate": {
+        "A": 0.0260269593,
+        "B": 0.317080879
+      },
+      "score_lead": {
+        "A": -8.45289604,
+        "B": -1.31147059
+      }
+    }
+  },
+  "X_A_targets": [
+    {
+      "size": 3,
+      "stones": [
+        "J3",
+        "K2",
+        "K3"
+      ]
+    }
+  ]
+}
