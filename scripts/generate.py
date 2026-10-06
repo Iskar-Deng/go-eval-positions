@@ -272,10 +272,17 @@ def legal(result, move, size):
     return result['policy'][i] >= 0
 
 
+class MissingMoveError(Exception):
+    """KataGo did not return an evaluation for the requested move."""
+
+
 def metric(result, move=None):
     if move is None:
         return result['rootInfo']
-    return next(m for m in result['moveInfos'] if m['move'] == move)
+    for item in result['moveInfos']:
+        if item['move'] == move:
+            return item
+    raise MissingMoveError(f'KataGo returned no evaluation for {move}')
 
 
 def check_scores(x, y, loose=False):
@@ -670,8 +677,19 @@ class Evaluator:
     def query(self, base, visits, allowed=None):
         key = json.dumps([base, visits, allowed], sort_keys=True)
         if key not in self.cache:
-            self.cache[key] = compact(self.engine.query(base, visits, allowed))
-            self.queries += 1
+            for attempt in range(2):
+                result = compact(self.engine.query(base, visits, allowed))
+                self.queries += 1
+                if allowed is not None and len(allowed) == 1:
+                    try:
+                        metric(result, allowed[0])
+                    except MissingMoveError:
+                        if attempt:
+                            raise
+                        print(f'KataGo omitted {allowed[0]}; retrying once', flush=True)
+                        continue
+                break
+            self.cache[key] = result
             if len(self.cache) > 256:
                 self.cache.popitem(last=False)
         self.cache.move_to_end(key)
@@ -889,7 +907,11 @@ def process_pair(e, record, out):
         status = record.get('_result_status', 'direct')
     else:
         print(f"Found {record['id']}; balancing now", flush=True)
-        result = balance_pair(e, record)
+        try:
+            result = balance_pair(e, record)
+        except MissingMoveError as exc:
+            print(f"Skipping balance for {record['id']}: {exc}", flush=True)
+            result = None
         status = 'balanced' if result is not None else 'balance_failed'
     if result is not None:
         # Keep the final record until the sample is published and state is saved.
@@ -977,7 +999,11 @@ def run_locked(args, out):
                 print(f'{path.name}: candidate {row_index+1}/{len(rows)}', flush=True)
                 if e is None:
                     e = Evaluator(out)
-                record = extract_pair(e, rows[row_index])
+                try:
+                    record = extract_pair(e, rows[row_index])
+                except MissingMoveError as exc:
+                    print(f'Skipping candidate in {path.name}: {exc}', flush=True)
+                    record = None
                 if record is None:
                     state['rows'][sha] = row_index+1
                     checkpoint()
