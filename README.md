@@ -1,6 +1,6 @@
 # Go evaluation positions
 
-Extract and balance X/Y Go positions while preserving full move histories.
+Generate X/Y Go positions with A/B/C candidate moves and full move histories.
 
 ## Install
 
@@ -14,20 +14,16 @@ bash setup.sh
 
 ## Run
 
-Each extracted pair is immediately balanced if needed and saved if it passes. Runs until the input games are exhausted or you press Ctrl+C. Run the same command again to resume. Difficult pairs get about two minutes of balancing before the search moves on.
-
 ```bash
 .venv/bin/python scripts/generate.py
 ```
 
-Progress shows completed/remaining games, saved samples, elapsed time, and a rough ETA after warm-up.
-
-All positions use Chinese rules, 7.5 komi, and a 19×19 board, regardless of the source SGF settings. These values are passed to KataGo by `query_position()` in `scripts/generate.py` and also written to exported SGFs. GPU, thread, and cache settings are in `configs/katago-analysis.cfg`.
+Automatically fills missing C in saved samples, then continues extraction and balancing. Press Ctrl+C to stop; run the same command to resume. Samples without a suitable C are kept for another attempt on the next run.
 
 ## Files
 
-- `datasets/sample/`: 20 example pairs. Each contains full-history `X.sgf` and `Y.sgf`, plus `sample.json` with candidate moves, winrates, and score leads. These examples do not affect generation.
-- `datasets/games/`: 96,121 input SGF files for extraction; duplicate games are skipped.
-- `scripts/generate.py`: the complete extraction and balancing script.
-- `configs/katago-analysis.cfg`: KataGo settings.
-- `outputs/<id>/`: generated samples (`X.sgf`, `Y.sgf`, and `sample.json`). `outputs/state.json` tracks progress for resuming.
+- `datasets/games/`: input SGF games.
+- `datasets/sample/`: example pairs.
+- `scripts/generate.py`: generation script. Uses a 19×19 board, Chinese rules, and 7.5 komi.
+- `configs/katago-analysis.cfg`: KataGo GPU and search settings.
+- `outputs/<id>/`: `X.sgf`, `Y.sgf`, and `sample.json`. Progress is saved in `outputs/state.json`.

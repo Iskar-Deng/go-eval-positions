@@ -3,9 +3,11 @@
 import argparse
 from collections import Counter, OrderedDict, deque
 from functools import lru_cache
+from itertools import zip_longest
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -23,6 +25,15 @@ from sgfmill import boards, sgf, sgf_moves
 
 PROJECT = Path(__file__).resolve().parents[1]
 BALANCE_SECONDS = 120
+
+
+class EvaluationUnavailable(RuntimeError):
+    """A candidate could not be evaluated; the search may continue."""
+
+
+class MissingMoveError(EvaluationUnavailable):
+    """KataGo did not return an evaluation for the requested move."""
+
 
 def gtp(point):
     if point is None:
@@ -112,14 +123,20 @@ class Engine:
         query.pop('_player')
         self.process.stdin.write(json.dumps(query) + '\n')
         self.process.stdin.flush()
+        deadline = time.monotonic() + self.timeout
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError('KataGo timed out; see engine.log')
             try:
-                line = self.responses.get(timeout=self.timeout)
+                line = self.responses.get(timeout=remaining)
             except queue.Empty:
                 raise RuntimeError('KataGo timed out; see engine.log')
             if line is None:
                 raise RuntimeError('KataGo exited; see engine.log')
             data = json.loads(line)
+            if data.get('id') not in (None, query_id):
+                continue
             if 'error' in data:
                 raise RuntimeError(data['error'])
             if 'warning' in data:
@@ -270,10 +287,6 @@ def legal(result, move, size):
     p = point_of(move)
     i = size * size if p is None else (size - 1 - p[0]) * size + p[1]
     return result['policy'][i] >= 0
-
-
-class MissingMoveError(Exception):
-    """KataGo did not return an evaluation for the requested move."""
 
 
 def metric(result, move=None):
@@ -670,7 +683,8 @@ def engine_environment():
 class Evaluator:
     """Reuse one engine and bound the in-memory cache for long runs."""
     def __init__(self, out):
-        self.engine = Engine(out/'engine.log')
+        self.out = out
+        self.engine = None
         self.cache = OrderedDict()
         self.queries = 0
 
@@ -678,16 +692,41 @@ class Evaluator:
         key = json.dumps([base, visits, allowed], sort_keys=True)
         if key not in self.cache:
             for attempt in range(2):
-                result = compact(self.engine.query(base, visits, allowed))
-                self.queries += 1
-                if allowed is not None and len(allowed) == 1:
-                    try:
+                try:
+                    if self.engine is None:
+                        self.engine = Engine(self.out/'engine.log')
+                    self.queries += 1
+                    result = compact(self.engine.query(base, visits, allowed))
+                    if not result['moveInfos']:
+                        raise MissingMoveError('KataGo returned no move evaluations')
+                    for info in [result['rootInfo']] + result['moveInfos']:
+                        if not (0 <= info['winrate'] <= 1 and math.isfinite(info['scoreLead'])):
+                            raise ValueError('KataGo returned invalid evaluation values')
+                    for info in result['moveInfos']:
+                        point = point_of(info['move'])
+                        if point is not None and not all(0 <= v < 19 for v in point):
+                            raise ValueError('KataGo returned an invalid move')
+                        if allowed is None:
+                            int(info['order'])
+                    size = base.get('boardXSize', 19) * base.get('boardYSize', 19)
+                    if base.get('includePolicy') and len(result['policy']) != size+1:
+                        raise ValueError('KataGo returned an incomplete policy')
+                    if base.get('includeOwnership') and len(result['ownership']) != size:
+                        raise ValueError('KataGo returned incomplete ownership')
+                    if allowed is not None and len(allowed) == 1:
                         metric(result, allowed[0])
-                    except MissingMoveError:
-                        if attempt:
+                except (RuntimeError, OSError, ValueError, KeyError, TypeError, IndexError, StopIteration) as exc:
+                    with (self.out/'engine-errors.jsonl').open('a') as log:
+                        log.write(json.dumps(dict(error=str(exc), position=base,
+                                                  visits=visits, allowed=allowed, attempt=attempt+1))+'\n')
+                    if not isinstance(exc, MissingMoveError):
+                        self.close()
+                    if attempt:
+                        if isinstance(exc, MissingMoveError):
                             raise
-                        print(f'KataGo omitted {allowed[0]}; retrying once', flush=True)
-                        continue
+                        raise EvaluationUnavailable(str(exc)) from exc
+                    print(f'KataGo: {exc}; retrying once', flush=True)
+                    continue
                 break
             self.cache[key] = result
             if len(self.cache) > 256:
@@ -696,7 +735,9 @@ class Evaluator:
         return self.cache[key]
 
     def close(self):
-        self.engine.close()
+        if self.engine is not None:
+            self.engine.close()
+            self.engine = None
 
 
 def candidate_rows(path, rng):
@@ -737,20 +778,28 @@ def extract_pair(e, row):
         except ValueError:
             continue
         yp = query_position(history, 'Y')
-        yr = e.query(yp, 96)
-        if not legal(yr, a, 19):
+        try:
+            yr = e.query(yp, 96)
+            if not legal(yr, a, 19):
+                continue
+            ya = metric(e.query(yp, 96, [a]), a)
+        except EvaluationUnavailable as exc:
+            print(f'Skipping edited position: {exc}', flush=True)
             continue
-        ya = metric(e.query(yp, 96, [a]), a)
         if metric(yr)['scoreLead'] - ya['scoreLead'] < 1:
             continue
         for b in candidate_bs(xr, yr, x, y, player, a, 3):
             if not check_structure(x, y, player, a, b)['valid']:
                 continue
-            xm = {'A': xa, 'B': metric(e.query(xp, 96, [b]), b)}
-            ym = {'A': ya, 'B': metric(e.query(yp, 96, [b]), b)}
-            if not all(check_scores(xm, ym, loose=True).values()):
+            try:
+                xm = {'A': xa, 'B': metric(e.query(xp, 96, [b]), b)}
+                ym = {'A': ya, 'B': metric(e.query(yp, 96, [b]), b)}
+                if not all(check_scores(xm, ym, loose=True).values()):
+                    continue
+                vx, vy = values(e, xp, a, b, 1000), values(e, yp, a, b, 1000)
+            except EvaluationUnavailable as exc:
+                print(f'Skipping B={b}: {exc}', flush=True)
                 continue
-            vx, vy = values(e, xp, a, b, 1000), values(e, yp, a, b, 1000)
             if vx is None or vy is None or not all(check_scores(vx, vy).values()):
                 continue
             identity = [stones(x), stones(y), row['player'], a, b]
@@ -796,7 +845,7 @@ def choose_remote(e, r, roots, current_boards, bases, actor, leader, moves, bloc
         return None
     shortlist.sort(key=lambda v: v[0])
     move = shortlist[min(variant, len(shortlist)-1)][1]
-    return next((m, pair) for m, pair in pool if m == move)
+    return next(((m, pair) for m, pair in pool if m == move), None)
 
 
 def balance_pair(e, r):
@@ -884,6 +933,7 @@ def progress_line(state, sources, elapsed, session_elapsed, initial_done):
     elif recent_done >= 5 and session_elapsed >= 60:
         eta = '~' + duration(session_elapsed / recent_done * remaining)
     return (f'Games {done}/{total} | Remaining {remaining} | Samples {saved} | '
+            f"With C {sum(v == 'accepted' for v in state.get('c_completed', {}).values())} | "
             f'Elapsed {duration(elapsed)} | ETA (rough) {eta}')
 
 
@@ -909,7 +959,7 @@ def process_pair(e, record, out):
         print(f"Found {record['id']}; balancing now", flush=True)
         try:
             result = balance_pair(e, record)
-        except MissingMoveError as exc:
+        except EvaluationUnavailable as exc:
             print(f"Skipping balance for {record['id']}: {exc}", flush=True)
             result = None
         status = 'balanced' if result is not None else 'balance_failed'
@@ -922,6 +972,198 @@ def process_pair(e, record, out):
     return status
 
 
+def read_sample_pair(source):
+    sample = json.loads((source/'sample.json').read_text())
+    history, boards = {}, []
+    setup = None
+    for side in ['X', 'Y']:
+        game = sgf.Sgf_game.from_bytes((source/f'{side}.sgf').read_bytes())
+        root = game.get_root()
+        if game.get_size() != 19 or root.get('RU').lower() != 'chinese' or root.get('KM') != 7.5:
+            raise ValueError('Expected 19x19 Chinese rules with 7.5 komi')
+        initial, plays = sgf_moves.get_setup_and_moves(game)
+        first = root.get('PL').upper()
+        current_setup = (board_stones(initial), first)
+        if setup is not None and current_setup != setup:
+            raise ValueError('X/Y starting setups differ')
+        setup = current_setup
+        history.update(initial_stones=setup[0], initial_player=first)
+        history[side] = [[color.upper(), gtp(point)] for color, point in plays]
+        board, _, player = replay_checked(initial, history[side], first)
+        boards.append(board)
+        if len(plays) != sample['move_number'] or len(plays) + 1 > 150:
+            raise ValueError('Sample move count mismatch or candidate beyond move 150')
+    a, b = sample['moves']['A'], sample['moves']['B']
+    if not check_structure(*boards, player, a, b)['valid']:
+        raise ValueError('Invalid X/Y/A/B structure')
+    return sample, history, boards, player
+
+
+def bad_c(reference, candidate):
+    return (candidate['winrate'] <= .20 and
+            reference['winrate'] - candidate['winrate'] >= .30 and
+            reference['scoreLead'] - candidate['scoreLead'] >= 4.)
+
+
+def find_c(e, sample, history, boards, player):
+    """Find one legal, non-atari C that is clearly worse than B on both boards."""
+    bases = [query_position(history, side) for side in ['X', 'Y']]
+    roots = [e.query(dict(base, includeOwnership=True), 64) for base in bases]
+    b = sample['moves']['B']
+    if not all(legal(root, b, 19) for root in roots):
+        return None
+    references = [metric(e.query(base, 1000, [b]), b) for base in bases]
+    if not all(.30 <= ref['winrate'] <= .70 for ref in references):
+        print('B recheck outside 30%-70%; keeping original sample unchanged', flush=True)
+        return None
+    # Require the gap against both the saved B and its fresh evaluation.
+    saved = [dict(winrate=sample['results'][s]['winrate']['B'],
+                  scoreLead=sample['results'][s]['score_lead']['B']) for s in ['X', 'Y']]
+    forbidden = {sample['moves']['A'], b, 'pass'}
+    for board in boards:
+        forbidden.update(ataris(board, player.lower()))
+    pool = []
+    for row in range(19):
+        for col in range(19):
+            move, index = gtp((row, col)), (18-row)*19+col
+            if move in forbidden or not all(legal(root, move, 19) for root in roots):
+                continue
+            pool.append((move, max(root['policy'][index] for root in roots),
+                         min(root['ownership'][index] for root in roots)))
+    by_policy = sorted(pool, key=lambda item: item[1], reverse=True)
+    fillers = sorted((item for item in pool if item[2] > .8), key=lambda item: item[2], reverse=True)
+    diverse = [by_policy[i] for i in [8, 16, 24, 40, 64, 96, 128, 192, 256] if i < len(by_policy)]
+    candidates = list(dict.fromkeys(item[0] for pair in zip_longest(fillers[:12], diverse)
+                                   for item in pair if item is not None))
+    candidates = list(dict.fromkeys(candidates + [item[0] for item in by_policy[-12:]]))
+    for number, move in enumerate(candidates, 1):
+        try:
+            passed = True
+            for base, ref, old in zip(bases, references, saved):
+                candidate = metric(e.query(base, 64, [move]), move)
+                if not bad_c(ref, candidate) or not bad_c(old, candidate):
+                    passed = False
+                    break
+            if not passed:
+                continue
+            evaluated = [metric(e.query(base, 1000, [move]), move) for base in bases]
+            if not all(bad_c(ref, c) and bad_c(old, c) for ref, old, c in zip(references, saved, evaluated)):
+                continue
+        except EvaluationUnavailable as exc:
+            print(f'Skipping C={move}: {exc}', flush=True)
+            continue
+        return dict(move=move, values=dict(zip(['X', 'Y'], evaluated)),
+                    reference_B=dict(zip(['X', 'Y'], references)), candidates_tried=number,
+                    visits=1000, max_winrate=.20, min_winrate_drop=.30, min_score_loss=4.)
+    return None
+
+
+def has_c(sample):
+    move = sample.get('moves', {}).get('C')
+    if not isinstance(move, str) or move in ('', 'pass', sample['moves'].get('A'), sample['moves'].get('B')):
+        return False
+    try:
+        return all(isinstance(sample['results'][side][field]['C'], (int, float)) and
+                   math.isfinite(sample['results'][side][field]['C'])
+                   for side in ['X', 'Y'] for field in ['winrate', 'score_lead'])
+    except (KeyError, TypeError):
+        return False
+
+
+def apply_c(sample, result, elapsed, queries):
+    sample['moves']['C'] = result['move']
+    for side in ['X', 'Y']:
+        value = result['values'][side]
+        sample['results'][side]['winrate']['C'] = value['winrate']
+        sample['results'][side]['score_lead']['C'] = value['scoreLead']
+    sample['c_search'] = dict(result, seconds=elapsed, queries=queries)
+
+
+def complete_c(e, folder):
+    """Atomically supplement an existing sample, preserving SGFs and A/B."""
+    started, queries = time.monotonic(), e.queries
+    print(f'{folder.name}: searching C', flush=True)
+    try:
+        sample, history, boards, player = read_sample_pair(folder)
+        result = find_c(e, sample, history, boards, player)
+    except (EvaluationUnavailable, ValueError, KeyError, TypeError, IndexError) as exc:
+        print(f'{folder.name}: C skipped: {exc}; A/B kept', flush=True)
+        return 'error'
+    elapsed = time.monotonic() - started
+    if result is None:
+        print(f'{folder.name}: no qualifying C; A/B kept | {elapsed:.1f}s', flush=True)
+        return 'not_found'
+    apply_c(sample, result, elapsed, e.queries-queries)
+    atomic_json(folder/'sample.json', sample)
+    print(f"{folder.name}: C={result['move']} | X {result['values']['X']['winrate']:.1%} | "
+          f"Y {result['values']['Y']['winrate']:.1%} | {elapsed:.1f}s", flush=True)
+    return 'accepted'
+
+
+def add_c_locked(args, out):
+    source = args.add_c.resolve()
+    if source == out:
+        raise ValueError('Use a separate output folder to preserve the original A/B samples')
+    samples = sorted(source.glob('*/sample.json'))
+    if not samples:
+        raise ValueError(f'No sample folders found in {source}')
+    state_path = out/'state.json'
+    state = json.loads(state_path.read_text()) if state_path.exists() else dict(mode='add_c', completed={})
+    if state.get('mode') != 'add_c':
+        raise ValueError('Output folder belongs to a different run')
+    e = None
+    try:
+        for path in samples:
+            folder = path.parent
+            fingerprint = hashlib.sha256(b''.join((folder/name).read_bytes()
+                for name in ['sample.json', 'X.sgf', 'Y.sgf'])).hexdigest()
+            if fingerprint in state['completed']:
+                continue
+            dest = out/folder.name
+            if dest.exists():
+                previous = json.loads((dest/'sample.json').read_text())
+                if previous.get('c_search', {}).get('input_sha256') != fingerprint:
+                    raise ValueError(f'Output already exists for a different input: {dest}')
+                # Recover a sample published just before an interruption.
+                state['completed'][fingerprint] = 'accepted'
+                atomic_json(state_path, state)
+                continue
+            sample, history, boards, player = read_sample_pair(folder)
+            if e is None:
+                atomic_json(out/'engine.json', provenance())
+                e = Evaluator(out)
+            started, queries = time.monotonic(), e.queries
+            print(f'{folder.name}: searching C', flush=True)
+            try:
+                result = find_c(e, sample, history, boards, player)
+            except EvaluationUnavailable as exc:
+                print(f'{folder.name}: {exc}', flush=True)
+                result = None
+            elapsed = time.monotonic() - started
+            if result is not None:
+                apply_c(sample, result, elapsed, e.queries-queries)
+                sample['c_search']['input_sha256'] = fingerprint
+                temp = out/(folder.name+'.tmp')
+                temp.mkdir(exist_ok=True)
+                for name in ['X.sgf', 'Y.sgf']:
+                    shutil.copyfile(folder/name, temp/name)
+                atomic_json(temp/'sample.json', sample)
+                temp.replace(dest)
+                status = 'accepted'
+                print(f"{folder.name}: C={result['move']} | X {result['values']['X']['winrate']:.1%} | "
+                      f"Y {result['values']['Y']['winrate']:.1%} | {elapsed:.1f}s", flush=True)
+            else:
+                status = 'not_found'
+                print(f'{folder.name}: no qualifying C | {elapsed:.1f}s', flush=True)
+            state['completed'][fingerprint] = status
+            atomic_json(state_path, state)
+        counts = Counter(state['completed'].values())
+        print(f"C search complete: {counts['accepted']} saved, {counts['not_found']} not found", flush=True)
+    finally:
+        if e is not None:
+            e.close()
+
+
 def run(args):
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -930,13 +1172,19 @@ def run(args):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise SystemExit('Another process is already using this output folder')
-        run_locked(args, out)
+        if getattr(args, 'add_c', None):
+            add_c_locked(args, out)
+        else:
+            run_locked(args, out)
 
 
 def run_locked(args, out):
     state_path = out/'state.json'
     state = json.loads(state_path.read_text()) if state_path.exists() else dict(completed={})
+    if state.get('mode') == 'add_c':
+        raise ValueError('Use the original generation output folder to resume extraction')
     state.setdefault('rows', {})
+    state.setdefault('c_completed', {})
     paths = sorted(args.games_dir.resolve().rglob('*.sgf'))
     if not paths:
         raise SystemExit(f'No SGF games found in {args.games_dir}')
@@ -962,18 +1210,49 @@ def run_locked(args, out):
     atomic_json(out/'engine.json', provenance())
     e = None
     pending = out/'pending.json'
+    c_attempted = set()
+
+    def evaluator():
+        nonlocal e
+        if e is None:
+            e = Evaluator(out)
+        return e
+
+    def supplement(folder):
+        path = folder/'sample.json'
+        if not path.exists():
+            return
+        try:
+            sample = json.loads(path.read_text())
+        except (ValueError, OSError) as exc:
+            print(f'{folder.name}: cannot read sample for C: {exc}', flush=True)
+            return
+        if has_c(sample):
+            state['c_completed'][folder.name] = 'accepted'
+        elif folder.name not in c_attempted:
+            c_attempted.add(folder.name)
+            state['c_completed'][folder.name] = complete_c(evaluator(), folder)
+        checkpoint()
+
     try:
+        # Inspect files as well as state: older runs saved A/B without C.
+        # An interruption after publishing a sample is recovered here too.
+        for path in sorted(out.glob('*/sample.json')):
+            if not path.parent.name.endswith('.tmp'):
+                supplement(path.parent)
         # A stopped balancing attempt resumes from its saved extracted pair.
         if pending.exists():
             record = json.loads(pending.read_text())
             sha = record['source_sha256']
             if sha not in state['completed']:
                 if not all(quality(record['X'], record['Y'])[1].values()):
-                    e = Evaluator(out)
+                    evaluator()
                 status = process_pair(e, record, out)
                 state['completed'][sha] = status
                 state['rows'].pop(sha, None)
                 checkpoint()
+                if status in ('direct', 'balanced', 'accepted'):
+                    supplement(out/record['id'])
             pending.unlink()
         queue = deque()
         for sha, path in games.items():
@@ -997,11 +1276,10 @@ def run_locked(args, out):
             status = 'no_pair'
             if row_index < len(rows):
                 print(f'{path.name}: candidate {row_index+1}/{len(rows)}', flush=True)
-                if e is None:
-                    e = Evaluator(out)
+                evaluator()
                 try:
                     record = extract_pair(e, rows[row_index])
-                except MissingMoveError as exc:
+                except EvaluationUnavailable as exc:
                     print(f'Skipping candidate in {path.name}: {exc}', flush=True)
                     record = None
                 if record is None:
@@ -1015,6 +1293,8 @@ def run_locked(args, out):
             state['rows'].pop(sha, None)
             checkpoint()
             pending.unlink(missing_ok=True)
+            if status in ('direct', 'balanced', 'accepted'):
+                supplement(out/record['id'])
         print('All input games processed. Add more SGFs and run the same command to continue.', flush=True)
     finally:
         if e is not None:
@@ -1025,8 +1305,11 @@ def run_locked(args, out):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--games-dir', type=Path, default=PROJECT/'datasets/games')
-    parser.add_argument('--out', type=Path, default=PROJECT/'outputs')
+    parser.add_argument('--add-c', type=Path, metavar='SAMPLES', help='Add C to existing X/Y sample folders')
+    parser.add_argument('--out', type=Path)
     args = parser.parse_args()
+    if args.out is None:
+        args.out = PROJECT/('outputs-with-c' if args.add_c else 'outputs')
     def stop(signum, frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
